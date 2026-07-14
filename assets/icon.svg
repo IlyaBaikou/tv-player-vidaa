@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#242735"/>
+      <stop offset="1" stop-color="#080a0f"/>
+    </linearGradient>
+  </defs>
+  <rect x="18" y="18" width="476" height="476" rx="112" fill="url(#bg)"/>
+  <path d="M112 132c0-34 27-61 61-61h166c34 0 61 27 61 61v176c0 34-27 61-61 61h-76l-55 49c-15 13-38 2-38-18v-31c-33-2-58-28-58-61V132z" fill="none" stroke="#f0d04e" stroke-width="24" stroke-linejoin="round"/>
+  <text x="156" y="252" fill="#fff" font-family="Arial,sans-serif" font-size="112" font-weight="800">TV</text>
+  <path d="M307 198l70 43-70 43z" fill="#f0d04e"/>
+</svg>

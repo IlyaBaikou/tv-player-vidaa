@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+  <meta name="theme-color" content="#080a0f">
+  <title>TV Player</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="styles.css?v=4">
+</head>
+<body>
+  <div id="stage">
+    <video id="player" playsinline preload="auto"></video>
+    <div id="backdrop"></div>
+    <main id="app"></main>
+    <div id="toast" aria-live="polite"></div>
+    <div id="splash">
+      <div class="brand-mark"><span>TV</span><b>▶</b></div>
+      <div class="splash-subtitle">Телевидение и медиатека</div>
+    </div>
+  </div>
+  <script src="config.js?v=4"></script>
+  <script src="data.js?v=4"></script>
+  <script src="app.js?v=4"></script>
+</body>
+</html>
