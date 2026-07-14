@@ -57,45 +57,20 @@
 
   function migrateSources() {
     if (!Array.isArray(store.playlists)) store.playlists = [];
-    if (store.sourceSchema !== 2) {
-      // Version 1 contained a baked-in provider URL. Drop it during migration;
-      // remote and manually added sources are managed explicitly from now on.
-      store.playlists = [];
-      store.activePlaylist = 0;
-      store.sourceSchema = 2;
+    if (store.sourceSchema !== 3) {
+      // Old builds could contain a baked-in or remotely supplied provider URL.
+      // Keep only sources that the viewer explicitly added in schema 2.
+      if (store.sourceSchema === 2) {
+        var active = store.playlists[store.activePlaylist || 0];
+        store.playlists = store.playlists.filter(function (item) { return !item.remote; });
+        store.activePlaylist = Math.max(0, active && !active.remote ? store.playlists.findIndex(function (item) { return item.url === active.url; }) : 0);
+      } else {
+        store.playlists = [];
+        store.activePlaylist = 0;
+      }
+      store.sourceSchema = 3;
     }
     persist();
-  }
-
-  function removeRemoteSource() {
-    var active = activePlaylist();
-    store.playlists = store.playlists.filter(function (item) { return !item.remote; });
-    store.activePlaylist = Math.max(0, active && !active.remote ? store.playlists.findIndex(function (item) { return item.url === active.url; }) : 0);
-    persist();
-  }
-
-  function applyRemoteSource(remote) {
-    if (!remote || !/^https?:\/\//i.test(remote.playlistUrl || "")) throw new Error("В удалённом конфиге нет playlistUrl");
-    var active = activePlaylist();
-    var custom = store.playlists.filter(function (item) { return !item.remote; });
-    var remoteItem = { name: remote.name || "Телевидение", url: remote.playlistUrl, mediaUrl: remote.mediaUrl || "", remote: true };
-    store.playlists = [remoteItem].concat(custom);
-    if (active && !active.remote) {
-      var customIndex = custom.findIndex(function (item) { return item.url === active.url; });
-      store.activePlaylist = customIndex >= 0 ? customIndex + 1 : 0;
-    } else store.activePlaylist = 0;
-    persist();
-  }
-
-  function loadRemoteConfig() {
-    if (!config.remoteConfigUrl) return Promise.reject(new Error("Удалённый конфиг не указан"));
-    return fetch(config.remoteConfigUrl + (config.remoteConfigUrl.indexOf("?") >= 0 ? "&" : "?") + "t=" + Date.now(), { cache: "no-store" })
-      .then(function (response) { if (!response.ok) throw new Error("Config HTTP " + response.status); return response.text(); })
-      .then(function (text) {
-        var remote = JSON.parse(text.replace(/^\uFEFF/, "").trim());
-        applyRemoteSource(remote);
-        return remote;
-      });
   }
 
   function activePlaylist() { return store.playlists[store.activePlaylist || 0] || null; }
@@ -470,7 +445,8 @@
 
   function renderDialog() {
     var dialog = state.dialog;
-    app.insertAdjacentHTML("beforeend", '<div class="dialog-backdrop"><div class="dialog"><h2>Плейлист</h2><label>Название</label><input id="dialogName" value="' + esc(dialog.name) + '" data-focus="dialog-name"><label>URL M3U</label><input id="dialogPlaylist" value="' + esc(dialog.url) + '" data-focus="dialog-playlist"><label>URL медиатеки (необязательно)</label><input id="dialogMedia" value="' + esc(dialog.mediaUrl) + '" data-focus="dialog-media"><div class="dialog-actions"><button class="secondary-button focusable" data-action="dialog-cancel" data-focus="dialog-cancel" style="padding:0 28px">Отмена</button><button class="primary-button focusable" data-action="dialog-save" data-focus="dialog-save" style="padding:0 28px">Сохранить</button></div></div></div>');
+    var nameField = dialog.firstRun ? '<p class="subtle">Введите адрес M3U один раз. Он сохранится только на этом устройстве.</p>' : '<label>Название</label><input id="dialogName" value="' + esc(dialog.name) + '" data-focus="dialog-name">';
+    app.insertAdjacentHTML("beforeend", '<div class="dialog-backdrop"><div class="dialog"><h2>' + (dialog.firstRun ? 'Добавьте источник' : 'Плейлист') + '</h2>' + nameField + '<label>URL M3U</label><input id="dialogPlaylist" value="' + esc(dialog.url) + '" data-focus="dialog-playlist"><label>URL медиатеки (необязательно)</label><input id="dialogMedia" value="' + esc(dialog.mediaUrl) + '" data-focus="dialog-media"><div class="dialog-actions"><button class="secondary-button focusable" data-action="dialog-cancel" data-focus="dialog-cancel" style="padding:0 28px">Отмена</button><button class="primary-button focusable" data-action="dialog-save" data-focus="dialog-save" style="padding:0 28px">Сохранить</button></div></div></div>');
   }
 
   function runDiagnostics() {
@@ -542,14 +518,15 @@
     }
   });
 
-  function openPlaylistDialog(isNew) {
+  function openPlaylistDialog(isNew, firstRun) {
     var playlist = isNew ? { name: "Плейлист " + (store.playlists.length + 1), url: "", mediaUrl: "" } : (activePlaylist() || { name: "Телевидение", url: "", mediaUrl: "" });
-    state.dialog = { isNew: !!isNew, name: playlist.name || "Телевидение", url: playlist.url || "", mediaUrl: playlist.mediaUrl || "" };
-    state.focusId = "dialog-name"; render();
+    state.dialog = { isNew: !!isNew, firstRun: !!firstRun, name: firstRun ? "Телевидение" : (playlist.name || "Телевидение"), url: playlist.url || "", mediaUrl: playlist.mediaUrl || "" };
+    state.focusId = firstRun ? "dialog-playlist" : "dialog-name"; render();
   }
 
   function savePlaylistDialog() {
-    var name = document.getElementById("dialogName").value.trim() || "Телевидение";
+    var nameInput = document.getElementById("dialogName");
+    var name = nameInput ? (nameInput.value.trim() || "Телевидение") : "Телевидение";
     var url = document.getElementById("dialogPlaylist").value.trim();
     var media = document.getElementById("dialogMedia").value.trim();
     if (!url) { showToast("Укажите адрес M3U"); return; }
@@ -800,17 +777,11 @@
 
   window.addEventListener("resize", scaleStage);
   migrateSources(); scaleStage(); render();
-  loadRemoteConfig()
-    .catch(function () { removeRemoteSource(); state.error = ""; return null; })
-    .then(function (remote) {
-      render();
-      if (remote) return loadActivePlaylist(false);
-      return null;
-    })
-    .catch(function () {});
+  if (activePlaylist()) loadActivePlaylist(false).catch(function () {});
+  else openPlaylistDialog(true, true);
   if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
     window.addEventListener("load", function () {
-      navigator.serviceWorker.register("sw.js?v=1").catch(function () {});
+      navigator.serviceWorker.register("sw.js?v=2").catch(function () {});
     });
   }
   setTimeout(function () { document.getElementById("splash").classList.add("hidden"); }, 1500);
