@@ -15,7 +15,7 @@
     searchQuery: "", searchKeyIndex: 0, media: { stack: [], folder: null, index: 0, loading: false, error: "", search: false, searchQuery: "" },
     diagnostics: [], diagnosticConclusion: "Нажмите «Проверить соединение»",
     archiveProgram: null, isArchive: false, playbackUrl: "", playbackStartedAt: 0,
-    focusId: "", dialog: null
+    focusId: "", dialog: null, mobileChannelLimit: 40
   };
   var toastTimer = 0;
   var waitingTimer = 0;
@@ -26,6 +26,12 @@
   var enterLongHandled = false;
   var renderTimer = 0;
   var playbackBlocked = false;
+  var mobileLongPressTimer = 0;
+  var mobileLongPressed = false;
+
+  function isMobileLayout() {
+    return window.matchMedia && window.matchMedia("(max-width: 820px), (pointer: coarse) and (max-device-width: 1024px)").matches;
+  }
 
   function esc(value) {
     return String(value == null ? "" : value).replace(/[&<>"']/g, function (char) {
@@ -194,6 +200,7 @@
     rememberRecent(channel);
     loadPrograms(channel, false);
     setVideoScale();
+    video.controls = isMobileLayout();
     backdrop.style.display = "none";
     video.classList.add("visible");
     video.pause();
@@ -268,6 +275,7 @@
   function renderViewer() {
     var html = '<section class="viewer-screen">';
     if (state.panel !== "hidden") html += '<div class="viewer-gradient"></div>' + renderBrowser();
+    else html += '<button class="mobile-player-tap mobile-only" data-action="show-controls" aria-label="Управление">•••</button>';
     if (state.overlay === "search") html += renderSearch();
     else if (state.overlay === "info") html += renderInfo(false);
     else if (state.overlay === "controls") html += renderInfo(true);
@@ -283,21 +291,22 @@
 
   function renderBrowser() {
     var cats = categories();
-    var catWindow = windowSlice(cats, state.categoryIndex, 12);
+    var mobile = isMobileLayout();
+    var catWindow = mobile ? { start: 0, items: cats } : windowSlice(cats, state.categoryIndex, 12);
     var list = filteredChannels();
     if (state.channelIndex >= list.length) state.channelIndex = Math.max(0, list.length - 1);
     var isGrid = store.settings.view === "grid";
-    var channelWindow = windowSlice(list, state.channelIndex, isGrid ? 12 : 7);
+    var channelWindow = mobile ? { start: 0, items: list.slice(0, Math.max(state.mobileChannelLimit, state.channelIndex + 1)) } : windowSlice(list, state.channelIndex, isGrid ? 12 : 7);
     hydrateVisiblePrograms(channelWindow.items);
     var catHtml = catWindow.items.map(function (item, offset) {
       var index = catWindow.start + offset;
-      return '<button class="category focusable ' + (index === state.categoryIndex ? "active" : "") + '" data-focus="cat-' + index + '">' + esc(item.name) + '</button>';
+      return '<button class="category focusable ' + (index === state.categoryIndex ? "active" : "") + '" data-action="mobile-category" data-index="' + index + '" data-focus="cat-' + index + '">' + esc(item.name) + '</button>';
     }).join("");
     var channelHtml = channelWindow.items.map(function (channel, offset) {
       var index = channelWindow.start + offset;
       var current = currentFor(channel);
       var favorite = store.favorites.indexOf(channel.url) >= 0;
-      return '<button class="channel-card focusable ' + (state.channel && channel.id === state.channel.id ? "active" : "") + '" data-focus="channel-' + index + '">' +
+      return '<button class="channel-card focusable ' + (state.channel && channel.id === state.channel.id ? "active" : "") + '" data-action="mobile-channel" data-index="' + index + '" data-focus="channel-' + index + '">' +
         logoHtml(channel, "channel-logo") + '<div class="channel-copy"><div class="channel-name">' + esc(channel.name) + '</div>' +
         '<div class="channel-program">' + esc(current ? current.title : "Программа загружается…") + '</div>' +
         (current ? '<div class="mini-progress"><b style="width:' + progressFor(current) + '%"></b></div>' : '') + '</div>' +
@@ -306,16 +315,16 @@
     var selected = list[state.channelIndex] || state.channel;
     var guide = selected ? (state.programs[selected.epgId] || []) : [];
     if (guide.length && state.guideIndex >= guide.length) state.guideIndex = guide.length - 1;
-    var guideWindow = windowSlice(guide, state.guideIndex, 10);
+    var guideWindow = mobile ? { start: 0, items: guide } : windowSlice(guide, state.guideIndex, 10);
     var guideHtml = guide.length ? guideWindow.items.map(function (program, offset) {
       var index = guideWindow.start + offset;
       var current = program.start <= Date.now() && program.end > Date.now();
       var future = program.start > Date.now();
-      return '<button class="program-card focusable ' + (current ? "current " : "") + (future ? "future" : "") + '" data-focus="program-' + index + '"><span class="program-time">' + D.formatTime(program.start) + '</span><span class="program-title">' + esc(program.title) + '</span><span class="program-status">' + (current ? "live" : future ? "будет позже" : "▶ архив") + '</span></button>';
+      return '<button class="program-card focusable ' + (current ? "current " : "") + (future ? "future" : "") + '" data-action="mobile-program" data-index="' + index + '" data-focus="program-' + index + '"><span class="program-time">' + D.formatTime(program.start) + '</span><span class="program-title">' + esc(program.title) + '</span><span class="program-status">' + (current ? "live" : future ? "будет позже" : "▶ архив") + '</span></button>';
     }).join("") : '<div class="panel-placeholder">' + (state.error ? esc(state.error) : "Программа передач загружается…") + '</div>';
     return '<div class="browser-shell"><aside class="categories"><div class="side-clock">' + clockLabel() + '</div><div class="side-date">' + esc(dateLabel()) + '</div>' +
       '<button class="search-entry focusable" data-action="search" data-focus="search-open">⌕  Поиск</button><div class="category-list">' + catHtml + '</div></aside>' +
-      '<section class="channel-pane"><div class="pane-handle"></div><div class="' + (isGrid ? "channel-grid" : "channel-list") + '">' + (channelHtml || '<div class="panel-placeholder">В этой категории пока нет каналов</div>') + '</div></section>' +
+      '<section class="channel-pane"><div class="pane-handle"></div><div class="' + (isGrid ? "channel-grid" : "channel-list") + '">' + (channelHtml || '<div class="panel-placeholder">В этой категории пока нет каналов</div>') + '</div>' + (mobile && channelWindow.items.length < list.length ? '<button class="mobile-more mobile-only" data-action="mobile-more-channels">Показать ещё каналы</button>' : '') + '</section>' +
       '<section class="guide-pane"><div class="guide-header"><h2>' + esc(selected ? selected.name : "Программа") + '</h2><span class="archive-badge">' + (selected && selected.catchupDays ? "• " + selected.catchupDays + "д. архив" : "без архива") + '</span></div><div class="guide-list">' + guideHtml + '</div></section></div>';
   }
 
@@ -350,7 +359,9 @@
     return '<div class="controls-row"><button class="control-button focusable" data-action="seek-back" data-focus="control-back">−30 сек</button>' +
       '<button class="control-button focusable" data-action="play-pause" data-focus="control-play">' + (video.paused ? "▶ Смотреть" : "Ⅱ Пауза") + '</button>' +
       '<button class="control-button focusable" data-action="seek-forward" data-focus="control-forward">+30 сек</button>' +
+      '<button class="control-button focusable" data-action="show-audio" data-focus="control-audio">Аудио</button>' +
       '<button class="control-button live focusable" data-action="live" data-focus="control-live">● Live</button>' +
+      '<button class="control-button mobile-only" data-action="close-overlay">Закрыть</button>' +
       '<div style="align-self:center;margin-left:18px;color:#d5d2db;font-size:20px">' + formatDuration(video.currentTime) + ' / ' + formatDuration(duration) + '</div></div>';
   }
 
@@ -374,13 +385,17 @@
     return state.channels.filter(function (channel) { return channel.name.toLowerCase().indexOf(query) >= 0; }).slice(0, 14);
   }
 
+  function channelSearchCards() {
+    return searchResults().map(function (channel, index) {
+      return '<button class="search-card focusable" data-action="search-result" data-index="' + index + '" data-focus="result-' + index + '">' + logoHtml(channel, "") + '<span>' + esc(channel.name) + '</span></button>';
+    }).join("");
+  }
+
   function renderSearch() {
     var keys = keyboardChars.map(function (char, index) { return '<button class="key focusable" data-action="key" data-char="' + char + '" data-focus="key-' + index + '">' + char + '</button>'; }).join("") +
       '<button class="key wide focusable" data-action="space" data-focus="key-space">пробел</button><button class="key wide focusable" data-action="backspace" data-focus="key-back">⌫</button>';
-    var results = searchResults().map(function (channel, index) {
-      return '<button class="search-card focusable" data-action="search-result" data-index="' + index + '" data-focus="result-' + index + '">' + logoHtml(channel, "") + '<span>' + esc(channel.name) + '</span></button>';
-    }).join("");
-    return '<div class="overlay"><div class="search-query"><b>⌕</b><span>' + esc(state.searchQuery || "Поиск каналов") + '</span></div><div class="keyboard">' + keys + '</div><div class="search-results">' + results + '</div></div>';
+    var results = channelSearchCards();
+    return '<div class="overlay"><button class="overlay-close mobile-only" data-action="close-overlay">×</button><div class="search-query"><b>⌕</b><span id="mobileSearchLabel">' + esc(state.searchQuery || "Поиск каналов") + '</span></div><input id="mobileChannelSearch" class="mobile-search-input mobile-only" type="search" inputmode="search" autocomplete="off" placeholder="Название канала" value="' + esc(state.searchQuery) + '"><div class="keyboard">' + keys + '</div><div id="mobileSearchResults" class="search-results">' + results + '</div></div>';
   }
 
   function renderSettings() {
@@ -434,13 +449,17 @@
     return entries.filter(function (entry) { return !query || entry.title.toLowerCase().indexOf(query) >= 0; }).slice(0, 14);
   }
 
+  function mediaSearchCards() {
+    return mediaSearchResults().map(function (entry, index) {
+      return '<button class="search-card focusable" data-action="media-search-result" data-index="' + index + '" data-focus="media-result-' + index + '"><div class="media-art" style="height:145px"><span>' + (entry.isFolder ? '▰' : '▶') + '</span>' + (entry.logo ? '<img src="' + esc(entry.logo) + '" alt="" onerror="this.style.display=\'none\'">' : '') + '</div><span>' + esc(entry.title) + '</span></button>';
+    }).join("");
+  }
+
   function renderMediaSearch() {
     var keys = keyboardChars.map(function (char, index) { return '<button class="key focusable" data-action="media-key" data-char="' + char + '" data-focus="media-key-' + index + '">' + char + '</button>'; }).join("") +
       '<button class="key wide focusable" data-action="media-space" data-focus="media-key-space">пробел</button><button class="key wide focusable" data-action="media-backspace" data-focus="media-key-back">⌫</button>';
-    var results = mediaSearchResults().map(function (entry, index) {
-      return '<button class="search-card focusable" data-action="media-search-result" data-index="' + index + '" data-focus="media-result-' + index + '"><div class="media-art" style="height:145px"><span>' + (entry.isFolder ? '▰' : '▶') + '</span>' + (entry.logo ? '<img src="' + esc(entry.logo) + '" alt="" onerror="this.style.display=\'none\'">' : '') + '</div><span>' + esc(entry.title) + '</span></button>';
-    }).join("");
-    return '<div class="overlay"><div class="search-query"><b>⌕</b><span>' + esc(state.media.searchQuery || "Поиск в медиатеке") + '</span></div><div class="keyboard">' + keys + '</div><div class="search-results">' + results + '</div></div>';
+    var results = mediaSearchCards();
+    return '<div class="overlay"><button class="overlay-close mobile-only" data-action="close-media-search">×</button><div class="search-query"><b>⌕</b><span id="mobileMediaSearchLabel">' + esc(state.media.searchQuery || "Поиск в медиатеке") + '</span></div><input id="mobileMediaSearch" class="mobile-search-input mobile-only" type="search" inputmode="search" autocomplete="off" placeholder="Фильм или сериал" value="' + esc(state.media.searchQuery) + '"><div class="keyboard">' + keys + '</div><div id="mobileMediaSearchResults" class="search-results">' + results + '</div></div>';
   }
 
   function renderDialog() {
@@ -493,6 +512,27 @@
     else if (name === "space") { state.searchQuery += " "; render(); }
     else if (name === "backspace") { state.searchQuery = state.searchQuery.slice(0, -1); render(); }
     else if (name === "search-result") { var result = searchResults()[+target.getAttribute("data-index")]; state.overlay = ""; playChannel(result, false); }
+    else if (name === "mobile-category") {
+      state.categoryIndex = +target.getAttribute("data-index");
+      var mobileCat = categories()[state.categoryIndex];
+      if (mobileCat) { state.selectedGroup = mobileCat.id; state.channelIndex = 0; state.guideIndex = 0; state.mobileChannelLimit = 40; state.panel = "channels"; render(); }
+    }
+    else if (name === "mobile-channel") {
+      state.channelIndex = +target.getAttribute("data-index");
+      var mobileChannel = filteredChannels()[state.channelIndex];
+      if (mobileChannel) { state.panel = "channels"; playChannel(mobileChannel, false); }
+    }
+    else if (name === "mobile-program") {
+      state.guideIndex = +target.getAttribute("data-index");
+      var mobileGuide = state.channel ? state.programs[state.channel.epgId] || [] : [];
+      var mobileProgram = mobileGuide[state.guideIndex];
+      if (mobileProgram && mobileProgram.start <= Date.now()) { if (mobileProgram.end <= Date.now()) playArchive(mobileProgram); else goLive(); }
+    }
+    else if (name === "mobile-more-channels") { state.mobileChannelLimit += 40; render(); }
+    else if (name === "show-controls") { state.overlay = "controls"; state.focusId = "control-play"; render(); }
+    else if (name === "show-audio") { state.overlay = "audio"; state.focusId = "audio-0"; render(); }
+    else if (name === "close-overlay") { state.overlay = ""; render(); }
+    else if (name === "close-media-search") { state.media.search = false; render(); }
     else if (name === "from-start") { var current = state.channel && D.currentProgram(state.programs[state.channel.epgId] || []); if (current) playArchive(current); }
     else if (name === "live") goLive();
     else if (name === "seek-back") seek(-30);
@@ -513,10 +553,41 @@
   app.addEventListener("click", function (event) {
     var target = event.target.closest ? event.target.closest("[data-action]") : null;
     if (target) {
+      if (mobileLongPressed) { mobileLongPressed = false; event.preventDefault(); return; }
       state.focusId = target.getAttribute("data-focus") || state.focusId;
       action(target);
     }
   });
+
+  app.addEventListener("input", function (event) {
+    if (event.target.id === "mobileChannelSearch") {
+      state.searchQuery = event.target.value.toLowerCase();
+      var searchLabel = document.getElementById("mobileSearchLabel");
+      var searchRoot = document.getElementById("mobileSearchResults");
+      if (searchLabel) searchLabel.textContent = state.searchQuery || "Поиск каналов";
+      if (searchRoot) searchRoot.innerHTML = channelSearchCards();
+    } else if (event.target.id === "mobileMediaSearch") {
+      state.media.searchQuery = event.target.value.toLowerCase();
+      var mediaLabel = document.getElementById("mobileMediaSearchLabel");
+      var mediaRoot = document.getElementById("mobileMediaSearchResults");
+      if (mediaLabel) mediaLabel.textContent = state.media.searchQuery || "Поиск в медиатеке";
+      if (mediaRoot) mediaRoot.innerHTML = mediaSearchCards();
+    }
+  });
+
+  app.addEventListener("touchstart", function (event) {
+    var target = event.target.closest ? event.target.closest('[data-action="mobile-channel"]') : null;
+    if (!target) return;
+    clearTimeout(mobileLongPressTimer);
+    mobileLongPressed = false;
+    mobileLongPressTimer = setTimeout(function () {
+      var channel = filteredChannels()[+target.getAttribute("data-index")];
+      if (channel) { mobileLongPressed = true; toggleFavorite(channel); }
+    }, 650);
+  }, { passive: true });
+
+  app.addEventListener("touchend", function () { clearTimeout(mobileLongPressTimer); }, { passive: true });
+  app.addEventListener("touchcancel", function () { clearTimeout(mobileLongPressTimer); }, { passive: true });
 
   function openPlaylistDialog(isNew, firstRun) {
     var playlist = isNew ? { name: "Плейлист " + (store.playlists.length + 1), url: "", mediaUrl: "" } : (activePlaylist() || { name: "Телевидение", url: "", mediaUrl: "" });
@@ -769,7 +840,18 @@
   document.addEventListener("visibilitychange", function () { if (!document.hidden && state.screen === "viewer") requestWakeLock(); });
 
   function scaleStage() {
-    var stage = document.getElementById("stage"); var scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+    var stage = document.getElementById("stage");
+    if (isMobileLayout()) {
+      stage.style.transform = "none";
+      stage.style.left = "0";
+      stage.style.top = "0";
+      stage.style.width = "100%";
+      stage.style.height = "100dvh";
+      return;
+    }
+    stage.style.width = "1920px";
+    stage.style.height = "1080px";
+    var scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
     stage.style.transform = "scale(" + scale + ")";
     stage.style.left = ((window.innerWidth - 1920 * scale) / 2) + "px";
     stage.style.top = ((window.innerHeight - 1080 * scale) / 2) + "px";
@@ -781,7 +863,7 @@
   else openPlaylistDialog(true, true);
   if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
     window.addEventListener("load", function () {
-      navigator.serviceWorker.register("sw.js?v=2").catch(function () {});
+      navigator.serviceWorker.register("sw.js?v=3").catch(function () {});
     });
   }
   setTimeout(function () { document.getElementById("splash").classList.add("hidden"); }, 1500);

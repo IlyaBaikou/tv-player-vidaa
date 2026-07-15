@@ -1,9 +1,9 @@
 {
   "name": "TV Player for VIDAA",
-  "version": "0.1.2",
-  "builtAt": "2026-07-15T10:11:51.836Z",
+  "version": "0.1.3",
+  "builtAt": "2026-07-15T11:26:43.866Z",
   "files": 265,
-  "bytes": 161308133,
+  "bytes": 161321712,
   "epg": {
     "generatedAt": 1784040745591,
     "channels": 2157,
@@ -11,15 +11,15 @@
     "buckets": 254
   },
   "shellSha256": {
-    "app.js": "7ec0ac13bcb2f3e594c093eede52276aa595ce4bc5698a14fdb6566d74d08d18",
+    "app.js": "fe2e062750f7347820a40caafe014fe892788a3381f05e1f102f01ed14c56b41",
     "assets/icon.png": "fed61ad84a52a825c8234acf09f16fd377806c1a6485111defc02d06474b122f",
     "assets/icon.svg": "8d57d514fef33d4f8a7d7a4a5fe554805d0bd8c121fc4bffdcec293110d7a57a",
     "assets/rubik.ttf": "1b3a7437ba2af80e465e773ed60c5036d1ba6ace492d89046dbcf18fb31e4e88",
     "config.js": "f6143665968877a3ddecc493fa46de36be831ae1dc675684512103e40e9fc8d2",
     "data.js": "904979accaf43e4f10ecb867cb884d26d7189a98a7922af6af898fe25afd02f7",
-    "index.html": "412fbd263e9e76c4ba3d1b84c0422d798edbef384a3df91f99f3f2ec9bc1d35a",
-    "manifest.json": "0f37c7b0aafcb2dbf039ca1f4f5c8ec31eb04cfdf2f970ee12a29875d050b13c",
-    "styles.css": "7762ef6945de4b74e76dfdbd9b6fcf0e39ee45592e15a6f64b838d7463250647",
-    "sw.js": "d3a9cb4c7ec901991b2ccfa50a63f3fa28fafdd4117ccca4938a353375e6974d"
+    "index.html": "831b88bc9b87f2d6930202a5a7e6912c268dceb03498a5cb4aa6bd450f2ab178",
+    "manifest.json": "e95e7a29eb4b2cd6449ec40901f81d46529f6708fe650841d63e05b7b29f1a74",
+    "styles.css": "5ef97fa0c1981ff33e55777086d84662affcbd6edb571360116eb00683346ed6",
+    "sw.js": "a6907d1de29a9909cb09b51abf784accbd6e04a343b1c65adfb65253342ac100"
   }
 }

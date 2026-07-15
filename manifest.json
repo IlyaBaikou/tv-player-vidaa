@@ -3,11 +3,14 @@
   "short_name": "TV Player",
   "description": "IPTV и медиатека для VIDAA",
   "start_url": "./",
-  "display": "fullscreen",
+  "scope": "./",
+  "id": "./",
+  "display": "standalone",
+  "display_override": ["fullscreen", "standalone"],
   "background_color": "#080a0f",
   "theme_color": "#080a0f",
   "icons": [
     { "src": "assets/icon.svg", "sizes": "any", "type": "image/svg+xml" },
-    { "src": "assets/icon.png", "sizes": "512x512", "type": "image/png" }
+    { "src": "assets/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
   ]
 }
