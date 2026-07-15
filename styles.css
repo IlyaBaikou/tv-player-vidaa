@@ -162,6 +162,15 @@ button { color: inherit; border: 2px solid transparent; outline: none; }
 .dialog input { width: 100%; height: 62px; border-radius: 12px; border: 2px solid #4e5260; background: #101218; color: white; padding: 0 16px; font-size: 18px; outline: none; }
 .dialog input:focus { border-color: var(--accent); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; }
+.source-pair-divider { display: flex; align-items: center; gap: 14px; margin: 20px 0 14px; color: var(--muted); }
+.source-pair-divider:before, .source-pair-divider:after { content: ""; height: 1px; background: rgba(255,255,255,.14); flex: 1; }
+.phone-source-button { width: 100%; }
+.source-pair-error { color: var(--live); margin: 12px 0 0; }
+.source-pair-card { display: grid; grid-template-columns: 210px 1fr; gap: 28px; align-items: center; padding: 20px; border-radius: 17px; background: rgba(10,12,17,.72); border: 1px solid rgba(255,255,255,.12); }
+.source-pair-card img { width: 210px; height: 210px; padding: 8px; background: white; border-radius: 14px; }
+.source-pair-card h3 { margin: 0 0 9px; font-size: 24px; }
+.source-pair-card p { margin: 7px 0; color: var(--muted); line-height: 1.4; }
+.source-pair-code { color: var(--accent); font-size: 38px; letter-spacing: 8px; font-weight: 750; margin: 10px 0; }
 
 #toast { position: absolute; z-index: 200; left: 50%; bottom: 56px; transform: translateX(-50%) translateY(30px); padding: 16px 26px; border-radius: 13px; background: rgba(24,27,34,.96); color: white; font-size: 19px; opacity: 0; transition: .2s ease; pointer-events: none; border: 1px solid rgba(255,255,255,.14); }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
@@ -274,5 +283,8 @@ button { color: inherit; border: 2px solid transparent; outline: none; }
   .dialog h2 { font-size: 24px; }
   .dialog input { height: 52px; font-size: 16px; }
   .dialog-actions { position: sticky; bottom: 0; background: #1b1e27; padding-top: 10px; }
+  .source-pair-card { display: block; padding: 16px; }
+  .source-pair-card img { display: block; width: min(210px, 100%); height: auto; margin: 0 auto 16px; }
+  .source-pair-code { font-size: 32px; }
   #toast { position: fixed; bottom: max(18px, env(safe-area-inset-bottom)); width: calc(100% - 32px); text-align: center; font-size: 15px; }
 }

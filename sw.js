@@ -1,12 +1,12 @@
 /* TV Player VIDAA — offline shell cache. Remote config and streams are never cached. */
-var CACHE = "tv-player-vidaa-shell-v4";
+var CACHE = "tv-player-vidaa-shell-v5";
 var SHELL = [
   "./",
   "index.html",
-  "styles.css?v=6",
-  "config.js?v=6",
-  "data.js?v=6",
-  "app.js?v=6",
+  "styles.css?v=7",
+  "config.js?v=7",
+  "data.js?v=7",
+  "app.js?v=7",
   "manifest.json",
   "assets/rubik.ttf",
   "assets/icon.svg",

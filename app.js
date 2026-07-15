@@ -28,6 +28,8 @@
   var playbackBlocked = false;
   var mobileLongPressTimer = 0;
   var mobileLongPressed = false;
+  var sourcePairTimer = 0;
+  var sourcePairBase = String(config.pairingBaseUrl || "").replace(/\/$/, "");
 
   function isMobileLayout() {
     return window.matchMedia && window.matchMedia("(max-width: 820px), (pointer: coarse) and (max-device-width: 1024px)").matches;
@@ -465,7 +467,15 @@
   function renderDialog() {
     var dialog = state.dialog;
     var nameField = dialog.firstRun ? '<p class="subtle">Введите адрес M3U один раз. Он сохранится только на этом устройстве.</p>' : '<label>Название</label><input id="dialogName" value="' + esc(dialog.name) + '" data-focus="dialog-name">';
-    app.insertAdjacentHTML("beforeend", '<div class="dialog-backdrop"><div class="dialog"><h2>' + (dialog.firstRun ? 'Добавьте источник' : 'Плейлист') + '</h2>' + nameField + '<label>URL M3U</label><input id="dialogPlaylist" value="' + esc(dialog.url) + '" data-focus="dialog-playlist"><label>URL медиатеки (необязательно)</label><input id="dialogMedia" value="' + esc(dialog.mediaUrl) + '" data-focus="dialog-media"><div class="dialog-actions"><button class="secondary-button focusable" data-action="dialog-cancel" data-focus="dialog-cancel" style="padding:0 28px">Отмена</button><button class="primary-button focusable" data-action="dialog-save" data-focus="dialog-save" style="padding:0 28px">Сохранить</button></div></div></div>');
+    var phonePair = "";
+    if (sourcePairBase) {
+      if (dialog.pair) {
+        phonePair = '<div class="source-pair-card"><img src="' + esc(dialog.pair.qr) + '" alt="QR-код"><div><h3>Введите с телефона</h3><p>Отсканируйте QR-код камерой. После отправки источник появится здесь автоматически.</p><div class="source-pair-code">' + esc(dialog.pair.code) + '</div><p class="subtle">Код действует 10 минут</p><button class="secondary-button focusable" data-action="source-pair-start" data-focus="source-pair-new">Новый код</button></div></div>';
+      } else {
+        phonePair = '<div class="source-pair-divider"><span>или</span></div><button class="phone-source-button secondary-button focusable" data-action="source-pair-start" data-focus="source-pair-start">▣ Ввести с телефона</button>' + (dialog.pairError ? '<p class="source-pair-error">' + esc(dialog.pairError) + '</p>' : '');
+      }
+    }
+    app.insertAdjacentHTML("beforeend", '<div class="dialog-backdrop"><div class="dialog"><h2>' + (dialog.firstRun ? 'Добавьте источник' : 'Плейлист') + '</h2>' + nameField + '<div class="manual-source-fields"><label>URL M3U</label><input id="dialogPlaylist" value="' + esc(dialog.url) + '" data-focus="dialog-playlist"><label>URL медиатеки (необязательно)</label><input id="dialogMedia" value="' + esc(dialog.mediaUrl) + '" data-focus="dialog-media"></div>' + phonePair + '<div class="dialog-actions"><button class="secondary-button focusable" data-action="dialog-cancel" data-focus="dialog-cancel" style="padding:0 28px">Отмена</button><button class="primary-button focusable" data-action="dialog-save" data-focus="dialog-save" style="padding:0 28px">Сохранить</button></div></div></div>');
   }
 
   function runDiagnostics() {
@@ -497,7 +507,7 @@
   function action(target) {
     var name = target.getAttribute("data-action");
     if (!name) return;
-    if (name === "home") { closePlayback(); state.screen = "home"; state.dialog = null; render(); }
+    if (name === "home") { closePlayback(); clearSourcePair(); state.screen = "home"; state.dialog = null; render(); }
     else if (name === "settings") { closePlayback(); state.screen = "settings"; render(); }
     else if (name === "open-tv") openTelevision(null, true);
     else if (name === "recent") openTelevision(recentChannels(5)[+target.getAttribute("data-index")], false);
@@ -505,8 +515,9 @@
     else if (name === "add-playlist") openPlaylistDialog(true);
     else if (name === "edit-playlist") openPlaylistDialog(false);
     else if (name === "select-playlist") selectPlaylist(+target.getAttribute("data-index"));
-    else if (name === "dialog-cancel") { state.dialog = null; render(); }
+    else if (name === "dialog-cancel") { clearSourcePair(); state.dialog = null; render(); }
     else if (name === "dialog-save") savePlaylistDialog();
+    else if (name === "source-pair-start") startSourcePair();
     else if (name === "search") { state.overlay = "search"; state.searchQuery = ""; state.focusId = "key-0"; render(); }
     else if (name === "key") { state.searchQuery += target.getAttribute("data-char") || ""; render(); }
     else if (name === "space") { state.searchQuery += " "; render(); }
@@ -590,8 +601,9 @@
   app.addEventListener("touchcancel", function () { clearTimeout(mobileLongPressTimer); }, { passive: true });
 
   function openPlaylistDialog(isNew, firstRun) {
+    clearSourcePair();
     var playlist = isNew ? { name: "Плейлист " + (store.playlists.length + 1), url: "", mediaUrl: "" } : (activePlaylist() || { name: "Телевидение", url: "", mediaUrl: "" });
-    state.dialog = { isNew: !!isNew, firstRun: !!firstRun, name: firstRun ? "Телевидение" : (playlist.name || "Телевидение"), url: playlist.url || "", mediaUrl: playlist.mediaUrl || "" };
+    state.dialog = { isNew: !!isNew, firstRun: !!firstRun, name: firstRun ? "Телевидение" : (playlist.name || "Телевидение"), url: playlist.url || "", mediaUrl: playlist.mediaUrl || "", pair: null, pairError: "" };
     state.focusId = firstRun ? "dialog-playlist" : "dialog-name"; render();
   }
 
@@ -600,11 +612,64 @@
     var name = nameInput ? (nameInput.value.trim() || "Телевидение") : "Телевидение";
     var url = document.getElementById("dialogPlaylist").value.trim();
     var media = document.getElementById("dialogMedia").value.trim();
+    savePlaylistValues(name, url, media);
+  }
+
+  function savePlaylistValues(name, url, media) {
     if (!url) { showToast("Укажите адрес M3U"); return; }
     var existing = state.dialog && !state.dialog.isNew ? activePlaylist() : null;
     if (existing) { existing.name = name; existing.url = url; existing.mediaUrl = media; }
     else { store.playlists.push({ name: name, url: url, mediaUrl: media }); store.activePlaylist = store.playlists.length - 1; }
-    persist(); state.dialog = null; state.playlist = null; state.channels = []; loadActivePlaylist(true);
+    clearSourcePair(); persist(); state.dialog = null; state.playlist = null; state.channels = []; loadActivePlaylist(true);
+  }
+
+  function clearSourcePair() {
+    clearInterval(sourcePairTimer);
+    sourcePairTimer = 0;
+  }
+
+  function startSourcePair() {
+    if (!state.dialog || !sourcePairBase) return;
+    clearSourcePair();
+    state.dialog.pair = null;
+    state.dialog.pairError = "";
+    showToast("Создаём код для телефона…");
+    fetch(sourcePairBase + "/api/tv-pair/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}"
+    }).then(function (response) {
+      return response.json().then(function (body) { if (!response.ok) throw new Error(body.error || "Не удалось создать код"); return body; });
+    }).then(function (pair) {
+      if (!state.dialog) return;
+      state.dialog.pair = pair;
+      state.focusId = "source-pair-new";
+      render();
+      sourcePairTimer = setInterval(checkSourcePair, 1800);
+    }).catch(function (error) {
+      if (!state.dialog) return;
+      state.dialog.pairError = error.message || "Сервис передачи недоступен";
+      render();
+    });
+  }
+
+  function checkSourcePair() {
+    var pair = state.dialog && state.dialog.pair;
+    if (!pair) return clearSourcePair();
+    fetch(sourcePairBase + "/api/tv-pair/" + encodeURIComponent(pair.code) + "/status?pollToken=" + encodeURIComponent(pair.pollToken)).then(function (response) {
+      return response.json().then(function (body) { if (!response.ok) throw new Error(body.error || "Не удалось получить источник"); return body; });
+    }).then(function (result) {
+      if (result.status !== "ready" || !result.source) return;
+      var source = result.source;
+      showToast("Источник получен с телефона");
+      savePlaylistValues(source.name || "Телевидение", source.url, source.mediaUrl || "");
+    }).catch(function (error) {
+      clearSourcePair();
+      if (!state.dialog) return;
+      state.dialog.pair = null;
+      state.dialog.pairError = error.message || "Код передачи больше не действует";
+      render();
+    });
   }
 
   function selectPlaylist(index) {
@@ -744,7 +809,7 @@
   }
 
   function back() {
-    if (state.dialog) { state.dialog = null; render(); return; }
+    if (state.dialog) { clearSourcePair(); state.dialog = null; render(); return; }
     if (state.screen === "viewer") {
       if (state.overlay === "search" && state.searchQuery) { state.searchQuery = state.searchQuery.slice(0, -1); render(); return; }
       if (state.overlay) { state.overlay = ""; render(); return; }
@@ -863,7 +928,7 @@
   else openPlaylistDialog(true, true);
   if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
     window.addEventListener("load", function () {
-      navigator.serviceWorker.register("sw.js?v=3").catch(function () {});
+      navigator.serviceWorker.register("sw.js?v=4").catch(function () {});
     });
   }
   setTimeout(function () { document.getElementById("splash").classList.add("hidden"); }, 1500);
