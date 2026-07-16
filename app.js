@@ -1093,6 +1093,12 @@
       render();
       return;
     }
+    if (state.overlay === "audio" && direction === "down") {
+      state.overlay = "";
+      state.focusId = "";
+      render();
+      return;
+    }
     if (state.overlay) { spatialMove(direction); return; }
     if (state.panel === "hidden") {
       if (direction === "right") { state.panel = "channels"; state.focusId = "channel-" + state.channelIndex; render(); }
@@ -1339,7 +1345,7 @@
   else openPlaylistDialog(true, true);
   if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
     window.addEventListener("load", function () {
-      navigator.serviceWorker.register("sw.js?v=7").catch(function () {});
+      navigator.serviceWorker.register("sw.js?v=8").catch(function () {});
     });
   }
   setTimeout(function () { document.getElementById("splash").classList.add("hidden"); }, 1500);
