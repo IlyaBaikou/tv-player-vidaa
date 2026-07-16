@@ -2,6 +2,7 @@
   "use strict";
 
   var D = window.TVData;
+  var S = window.TVSports;
   var config = window.TV_PLAYER_CONFIG || {};
   var store = D.loadStore();
   var app = document.getElementById("app");
@@ -16,7 +17,8 @@
     diagnostics: [], diagnosticConclusion: "Нажмите «Проверить соединение»",
     archiveProgram: null, isArchive: false, playbackUrl: "", playbackStartedAt: 0,
     archiveResumeAt: 0, playingFallback: null,
-    focusId: "", dialog: null, mobileChannelLimit: 32, mobileGuideLimit: 36
+    focusId: "", dialog: null, mobileChannelLimit: 32, mobileGuideLimit: 36,
+    sports: { loading: false, error: "", events: [], featured: [], selected: null, filter: "all" }
   };
   var toastTimer = 0;
   var waitingTimer = 0;
@@ -37,6 +39,7 @@
   var zapperToken = 0;
   var healthyPlaybackTimer = 0;
   var sourcePairBase = String(config.pairingBaseUrl || "").replace(/\/$/, "");
+  var sportsApiBase = String(config.sportsApiUrl || "").replace(/\/$/, "");
 
   function isMobileLayout() {
     return window.matchMedia && window.matchMedia("(max-width: 820px), (pointer: coarse) and (max-device-width: 1024px)").matches;
@@ -165,6 +168,66 @@
 
   function hydrateVisiblePrograms(channels) {
     channels.forEach(function (channel) { loadPrograms(channel, true); });
+  }
+
+  function loadSportsHub() {
+    state.screen = "sports";
+    state.sports.loading = true;
+    state.sports.error = "";
+    state.sports.selected = null;
+    state.focusId = "sports-filter-all";
+    render();
+    return loadActivePlaylist(false).then(function () {
+      var epgUrl = String(config.epgBaseUrl || "epg").replace(/\/$/, "") + "/sports.json";
+      var date = S.localDate(Date.now());
+      var localRequest = fetch(epgUrl, { cache: "no-store" }).then(function (response) {
+        if (!response.ok) throw new Error("Спортивная EPG ещё не подготовлена");
+        return response.json();
+      }).catch(function () { return { records: [] }; });
+      var calendarRequest = sportsApiBase ? fetch(sportsApiBase + "/api/sports?date=" + encodeURIComponent(date), { cache: "no-store" }).then(function (response) {
+        if (!response.ok) throw new Error("Календарь HTTP " + response.status);
+        return response.json();
+      }).catch(function () { return { events: [] }; }) : Promise.resolve({ events: [] });
+      return Promise.all([localRequest, calendarRequest]);
+    }).then(function (result) {
+      var model = S.build(result[0].records || [], state.channels, result[1].events || [], Date.now());
+      state.sports.events = model.events;
+      state.sports.featured = model.featured;
+      state.sports.loading = false;
+      render();
+    }).catch(function (error) {
+      state.sports.loading = false;
+      state.sports.error = error.message || "Не удалось собрать SportsHub";
+      render();
+    });
+  }
+
+  function sportsView() {
+    var filter = state.sports.filter;
+    var events = state.sports.events.filter(function (event) { return filter === "all" || event.sport.id === filter; });
+    return {
+      featured: state.sports.featured.filter(function (item) { return filter === "all" || (item.fixture.sport || "football") === filter; }),
+      now: events.filter(function (event) { return !event.fixture && event.state === "live"; }),
+      other: events.filter(function (event) { return !event.fixture && event.state !== "live"; })
+    };
+  }
+
+  function sportsEvent(id) {
+    return state.sports.events.filter(function (event) { return event.id === id; })[0] || null;
+  }
+
+  function openSportsBroadcast(broadcast) {
+    if (!broadcast || !broadcast.channel) return;
+    loadActivePlaylist(false).then(function () {
+      var channel = broadcast.channel;
+      state.screen = "viewer"; state.panel = "hidden"; state.overlay = ""; state.channel = channel;
+      state.selectedGroup = channel.group || "__all__";
+      state.categoryIndex = Math.max(0, categories().findIndex(function (item) { return item.id === state.selectedGroup; }));
+      var list = filteredChannels();
+      state.channelIndex = Math.max(0, list.findIndex(function (item) { return item.id === channel.id; }));
+      if (broadcast.program.end <= Date.now() && channel.catchupDays) playArchive(broadcast.program);
+      else playChannel(channel, false);
+    }).catch(function (error) { showToast(error.message || "Не удалось открыть трансляцию"); });
   }
 
   function scheduleRender() {
@@ -332,6 +395,7 @@
     if (state.screen === "viewer") renderViewer();
     else if (state.screen === "settings") renderSettings();
     else if (state.screen === "media") renderMedia();
+    else if (state.screen === "sports") renderSports();
     else renderHome();
     if (state.dialog) renderDialog();
     restoreFocus();
@@ -340,6 +404,7 @@
   function topbar(active) {
     return '<header class="topbar"><div class="topbar-left"><div class="brand"><div class="brand-mark"><span>TV</span><b>▶</b></div><div class="brand-title">TV Player</div></div>' +
       '<nav class="topbar-nav"><button class="nav-button focusable ' + (active === "home" ? "active" : "") + '" data-action="home" data-focus="nav-home">Главная</button>' +
+      '<button class="nav-button focusable ' + (active === "sports" ? "active" : "") + '" data-action="sports" data-focus="nav-sports">Спорт</button>' +
       '<button class="nav-button focusable ' + (active === "settings" ? "active" : "") + '" data-action="settings" data-focus="nav-settings">Настройки</button></nav></div>' +
       '<div class="topbar-actions">' + (active === "home" && activePlaylist() ? '<button class="pill-button focusable" data-action="add-playlist" data-focus="nav-add">＋ Плейлист</button>' : '') + '<div class="clock">' + clockLabel() + '<small>' + esc(dateLabel()) + '</small></div></div></header>';
   }
@@ -366,6 +431,76 @@
     app.innerHTML = '<section class="screen">' + topbar("home") + '<div class="home-content">' +
       '<h2 class="section-title">Смотреть</h2><div class="hero-row">' + hero + media + '</div>' + playlistSwitch + archiveSection + '<h2 class="section-title">Недавние</h2><div class="recent-row">' + recentHtml + '</div>' +
       (state.error ? '<div class="panel-placeholder">' + esc(state.error) + '</div>' : '') + '</div></section>';
+  }
+
+  function sportsStatus(stateName, start, explicitLive) {
+    if (stateName === "live") return explicitLive ? "● LIVE" : "● СЕЙЧАС · EPG";
+    if (stateName === "upcoming") return D.formatTime(start);
+    return "ЗАВЕРШЁН";
+  }
+
+  function teamLogo(url, name) {
+    return '<span class="sports-team-logo">' + (url ? '<img src="' + esc(url) + '" alt="" onerror="this.style.display=\'none\'">' : '<b>' + esc(String(name || "?").charAt(0)) + '</b>') + '</span>';
+  }
+
+  function renderFeaturedSports(item, index) {
+    var fixture = item.fixture;
+    var score = fixture.homeScore != null && fixture.awayScore != null ? '<strong class="sports-score">' + fixture.homeScore + ' : ' + fixture.awayScore + '</strong>' : '<strong class="sports-score">—</strong>';
+    return '<button class="sports-featured-card focusable ' + (item.linkedEvent ? "linked" : "unlinked") + '" data-action="sports-featured" data-id="' + esc(fixture.id) + '" data-focus="sports-featured-' + index + '">' +
+      '<div class="sports-card-status ' + item.state + '">' + sportsStatus(item.state, fixture.startMillis, true) + (item.linkedEvent ? '<span>TV ✓</span>' : '') + '</div>' +
+      '<div class="sports-versus">' + teamLogo(fixture.homeLogo, fixture.home) + score + teamLogo(fixture.awayLogo, fixture.away) + '</div>' +
+      '<div class="sports-featured-title">' + esc(fixture.home) + ' — ' + esc(fixture.away) + '</div>' +
+      '<div class="sports-competition">' + esc(fixture.competition || "Футбол") + '</div>' +
+      (!item.linkedEvent ? '<div class="sports-unavailable">нет в IPTV</div>' : '') + '</button>';
+  }
+
+  function renderSportsEvent(event, index, prefix) {
+    var logos = event.broadcasts.slice(0, 4).map(function (broadcast) {
+      return '<span class="sports-channel-logo">' + (broadcast.channel.logo ? '<img src="' + esc(broadcast.channel.logo) + '" alt="">' : 'TV') + '</span>';
+    }).join("");
+    var explicit = event.broadcasts.some(function (item) { return item.explicitLive; });
+    return '<button class="sports-event-card focusable" data-action="sports-event" data-id="' + esc(event.id) + '" data-focus="sports-' + prefix + '-' + index + '">' +
+      '<span class="sports-glyph">' + event.sport.glyph + '</span><span class="sports-event-copy"><small class="' + event.state + '">' + sportsStatus(event.state, event.start, explicit) + (event.competition ? ' · ' + esc(event.competition) : '') + '</small><strong>' + esc(event.title) + '</strong><em>' + esc(event.sport.title) + '</em></span>' +
+      '<span class="sports-event-logos">' + logos + '</span><span class="sports-channel-count"><b>' + event.broadcasts.length + '</b>' + (event.broadcasts.length === 1 ? 'канал' : 'каналов') + '</span><span class="sports-chevron">›</span></button>';
+  }
+
+  function renderSportsDetail(event) {
+    var fixture = event.fixture;
+    var visual = fixture ? '<div class="sports-detail-teams">' + teamLogo(fixture.homeLogo, fixture.home) + teamLogo(fixture.awayLogo, fixture.away) + '</div>' : '<div class="sports-detail-glyph">' + event.sport.glyph + '</div>';
+    var channels = event.broadcasts.map(function (broadcast, index) {
+      var archive = broadcast.program.end <= Date.now() && broadcast.channel.catchupDays;
+      var action = archive ? "▶ Смотреть из архива" : event.state === "upcoming" ? "▶ Открыть канал" : broadcast.explicitLive ? "● Смотреть Live" : "▶ Смотреть сейчас";
+      return '<button class="sports-broadcast focusable" data-action="sports-channel" data-index="' + index + '" data-focus="sports-channel-' + index + '">' +
+        '<span class="sports-broadcast-logo">' + (broadcast.channel.logo ? '<img src="' + esc(broadcast.channel.logo) + '" alt="">' : 'TV') + '</span><span><strong>' + esc(broadcast.channel.name) + '</strong><small>' + esc(broadcast.channel.group || "Телевидение") + '</small></span>' +
+        (/\b(hd|fhd|uhd|4k)\b/i.test(broadcast.channel.name) ? '<b class="sports-hd">HD</b>' : '') + '<em>' + action + '</em></button>';
+    }).join("");
+    return '<div class="sports-detail"><div class="sports-detail-hero">' + visual + '<div><small>' + esc(event.competition || event.sport.title) + '</small><h1>' + esc(event.title) + '</h1><p>' + D.formatTime(event.start) + ' · найдено каналов: ' + event.broadcasts.length + '</p></div></div>' +
+      '<div class="sports-detail-heading"><h2>Где смотреть</h2><button class="pill-button focusable" data-action="sports-back" data-focus="sports-back">К событиям</button></div><div class="sports-broadcast-list">' + channels + '</div></div>';
+  }
+
+  function renderSports() {
+    backdrop.style.display = "block"; video.classList.remove("visible");
+    var view = sportsView();
+    var selected = state.sports.selected && sportsEvent(state.sports.selected);
+    var filters = [{ id: "all", title: "Все", glyph: "●" }].concat(S.sports()).map(function (sport) {
+      return '<button class="sports-filter focusable ' + (state.sports.filter === sport.id ? 'active' : '') + '" data-action="sports-filter" data-sport="' + sport.id + '" data-focus="sports-filter-' + sport.id + '">' + sport.glyph + ' ' + sport.title + '</button>';
+    }).join("");
+    var content;
+    if (state.sports.loading) content = '<div class="sports-loading"><b>⚽</b><span>Собираем спортивные трансляции…</span></div>';
+    else if (state.sports.error) content = '<div class="sports-loading"><span>' + esc(state.sports.error) + '</span><button class="pill-button focusable" data-action="sports-refresh" data-focus="sports-refresh-error">Повторить</button></div>';
+    else if (selected) content = renderSportsDetail(selected);
+    else {
+      var featured = view.featured.slice(0, 6).map(renderFeaturedSports).join("");
+      var now = view.now.map(function (event, index) { return renderSportsEvent(event, index, "now"); }).join("");
+      var other = view.other.map(function (event, index) { return renderSportsEvent(event, index, "other"); }).join("");
+      content = '<div class="sports-filters">' + filters + '</div><div class="sports-scroll">' +
+        (featured ? '<div class="sports-section-title"><h2>Главное сегодня</h2><span>по реальному календарю</span></div><div class="sports-featured-row">' + featured + '</div>' : '') +
+        (now ? '<div class="sports-section-title"><h2>Сейчас в эфире</h2><span>по телепрограмме</span></div><div class="sports-event-list">' + now + '</div>' : '') +
+        (other ? '<div class="sports-section-title"><h2>Далее и в архиве</h2></div><div class="sports-event-list">' + other + '</div>' : '') +
+        (!featured && !now && !other ? '<div class="sports-empty">На сегодня таких событий не найдено</div>' : '') + '</div>';
+    }
+    app.innerHTML = '<section class="screen sports-screen">' + topbar("sports") + '<div class="sports-heading"><div><h1>' + (selected ? 'SportsHub · Каналы' : 'SportsHub') + '</h1><p>' + (selected ? 'Выберите трансляцию' : esc(dateLabel())) + '</p></div>' +
+      (!selected ? '<div><span>Календарь матчей + программа вашего IPTV</span><button class="pill-button focusable" data-action="sports-refresh" data-focus="sports-refresh">Обновить</button></div>' : '') + '</div><div class="sports-content">' + content + '</div></section>';
   }
 
   function renderViewer() {
@@ -667,6 +802,18 @@
     var name = target.getAttribute("data-action");
     if (!name) return;
     if (name === "home") { closePlayback(); clearSourcePair(); state.screen = "home"; state.dialog = null; render(); }
+    else if (name === "sports") loadSportsHub();
+    else if (name === "sports-refresh") loadSportsHub();
+    else if (name === "sports-filter") { state.sports.filter = target.getAttribute("data-sport") || "all"; state.focusId = "sports-filter-" + state.sports.filter; render(); }
+    else if (name === "sports-event") { var selectedSportsEvent = sportsEvent(target.getAttribute("data-id")); if (selectedSportsEvent) { state.sports.selected = selectedSportsEvent.id; state.focusId = "sports-channel-0"; render(); } }
+    else if (name === "sports-featured") {
+      var fixtureId = target.getAttribute("data-id");
+      var featured = state.sports.featured.filter(function (item) { return String(item.fixture.id) === String(fixtureId); })[0];
+      if (featured && featured.linkedEvent) { state.sports.selected = featured.linkedEvent.id; state.focusId = "sports-channel-0"; render(); }
+      else showToast("Этот матч не найден в программе ваших каналов");
+    }
+    else if (name === "sports-back") { state.sports.selected = null; state.focusId = "sports-filter-" + state.sports.filter; render(); }
+    else if (name === "sports-channel") { var selectedEvent = sportsEvent(state.sports.selected); if (selectedEvent) openSportsBroadcast(selectedEvent.broadcasts[+target.getAttribute("data-index")]); }
     else if (name === "settings") { closePlayback(); state.screen = "settings"; render(); }
     else if (name === "open-tv") openTelevision(null, true);
     else if (name === "recent") openTelevision(recentChannels(5)[+target.getAttribute("data-index")], false);
@@ -1025,6 +1172,7 @@
       else { state.screen = "home"; render(); }
       return;
     }
+    if (state.screen === "sports" && state.sports.selected) { state.sports.selected = null; state.focusId = "sports-filter-" + state.sports.filter; render(); return; }
     if (state.screen !== "home") { state.screen = "home"; render(); }
   }
 
@@ -1191,7 +1339,7 @@
   else openPlaylistDialog(true, true);
   if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
     window.addEventListener("load", function () {
-      navigator.serviceWorker.register("sw.js?v=6").catch(function () {});
+      navigator.serviceWorker.register("sw.js?v=7").catch(function () {});
     });
   }
   setTimeout(function () { document.getElementById("splash").classList.add("hidden"); }, 1500);
