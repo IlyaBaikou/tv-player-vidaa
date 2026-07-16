@@ -15,7 +15,8 @@
     searchQuery: "", searchKeyIndex: 0, media: { stack: [], folder: null, index: 0, loading: false, error: "", search: false, searchQuery: "" },
     diagnostics: [], diagnosticConclusion: "Нажмите «Проверить соединение»",
     archiveProgram: null, isArchive: false, playbackUrl: "", playbackStartedAt: 0,
-    focusId: "", dialog: null, mobileChannelLimit: 40
+    archiveResumeAt: 0, playingFallback: null,
+    focusId: "", dialog: null, mobileChannelLimit: 32, mobileGuideLimit: 36
   };
   var toastTimer = 0;
   var waitingTimer = 0;
@@ -26,9 +27,15 @@
   var enterLongHandled = false;
   var renderTimer = 0;
   var playbackBlocked = false;
+  var playbackSwitching = false;
+  var suppressArchiveSaveUntil = 0;
   var mobileLongPressTimer = 0;
   var mobileLongPressed = false;
   var sourcePairTimer = 0;
+  var archiveSaveTimer = 0;
+  var zapperTimer = 0;
+  var zapperToken = 0;
+  var healthyPlaybackTimer = 0;
   var sourcePairBase = String(config.pairingBaseUrl || "").replace(/\/$/, "");
 
   function isMobileLayout() {
@@ -65,6 +72,8 @@
 
   function migrateSources() {
     if (!Array.isArray(store.playlists)) store.playlists = [];
+    if (!Array.isArray(store.archiveHistory)) store.archiveHistory = [];
+    if (!store.channelHealth || typeof store.channelHealth !== "object") store.channelHealth = {};
     if (store.sourceSchema !== 3) {
       // Old builds could contain a baked-in or remotely supplied provider URL.
       // Keep only sources that the viewer explicitly added in schema 2.
@@ -88,7 +97,7 @@
     if (!playlist) return Promise.reject(new Error("Добавьте IPTV-плейлист"));
     if (!force && state.playlist && state.playlist.url === playlist.url && state.channels.length) return Promise.resolve(state.playlist);
     state.loading = true; state.error = ""; render();
-    return D.loadPlaylist(playlist.url).then(function (document) {
+    return D.loadPlaylist(playlist.url, !!force).then(function (document) {
       state.playlist = { name: playlist.name || "Телевидение", url: playlist.url, mediaUrl: playlist.mediaUrl || "", epgUrl: document.epgUrl };
       state.channels = document.channels;
       state.groups = unique(document.channels.map(function (channel) { return channel.group; }));
@@ -186,6 +195,62 @@
     persist();
   }
 
+  function continueArchives(limit) {
+    var playlist = activePlaylist();
+    var source = (store.archiveHistory || []).filter(function (item) {
+      return item && item.playlistUrl === (playlist && playlist.url) && item.progress > 1 && item.progress < 96;
+    });
+    source.sort(function (a, b) { return b.updatedAt - a.updatedAt; });
+    return source.slice(0, limit || 4);
+  }
+
+  function saveArchiveProgress() {
+    if (playbackSwitching || Date.now() < suppressArchiveSaveUntil || !state.isArchive || !state.archiveProgram || !state.channel || !state.channel.catchupDays) return;
+    var duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : Math.max(1, (state.archiveProgram.end - state.archiveProgram.start) / 1000);
+    var position = Math.max(0, Number(video.currentTime) || 0);
+    if (position < 8) return;
+    var progress = Math.min(100, Math.round(position / duration * 100));
+    var key = state.channel.url + "|" + state.archiveProgram.start;
+    var record = {
+      key: key,
+      playlistUrl: activePlaylist() && activePlaylist().url,
+      channelUrl: state.channel.url,
+      channelId: state.channel.id,
+      epgId: state.channel.epgId,
+      channelName: state.channel.name,
+      channelLogo: state.channel.logo,
+      title: state.archiveProgram.title,
+      description: state.archiveProgram.description || "",
+      start: state.archiveProgram.start,
+      end: state.archiveProgram.end,
+      position: position,
+      duration: duration,
+      progress: progress,
+      updatedAt: Date.now()
+    };
+    store.archiveHistory = (store.archiveHistory || []).filter(function (item) { return item.key !== key; });
+    if (progress < 96) store.archiveHistory.unshift(record);
+    store.archiveHistory = store.archiveHistory.slice(0, 12);
+    persist();
+  }
+
+  function resumeArchive(entry) {
+    if (!entry) return;
+    loadActivePlaylist(false).then(function () {
+      var channel = state.channels.filter(function (item) { return item.url === entry.channelUrl || (entry.epgId && item.epgId === entry.epgId); })[0];
+      if (!channel) throw new Error("Канал больше не найден в плейлисте");
+      state.screen = "viewer";
+      state.panel = "hidden";
+      state.overlay = "controls";
+      state.channel = channel;
+      state.selectedGroup = channel.group || "__all__";
+      state.categoryIndex = Math.max(0, categories().findIndex(function (item) { return item.id === state.selectedGroup; }));
+      var list = filteredChannels();
+      state.channelIndex = Math.max(0, list.findIndex(function (item) { return item.id === channel.id; }));
+      playArchive({ title: entry.title, description: entry.description || "", start: entry.start, end: entry.end }, entry.position || 0);
+    }).catch(function (error) { showToast(error.message || "Не удалось продолжить передачу"); });
+  }
+
   function setVideoScale() {
     var scale = store.settings.scale || "fit";
     video.style.objectFit = scale === "fill" ? "fill" : scale === "zoom" ? "cover" : "contain";
@@ -193,10 +258,21 @@
 
   function playChannel(channel, keepArchive) {
     if (!channel) return;
+    if (!keepArchive) saveArchiveProgress();
     state.channel = channel;
     state.archiveProgram = keepArchive ? state.archiveProgram : null;
     state.isArchive = !!keepArchive;
     state.playbackUrl = keepArchive ? state.playbackUrl : D.normalizeStream(channel.url);
+    if (!keepArchive) {
+      state.archiveResumeAt = 0;
+      state.playingFallback = null;
+      var fallback = D.qualityFallback(channel, state.channels);
+      var health = Number(store.channelHealth[channel.url] || 0);
+      if (fallback && (store.settings.quality === "sd" || (store.settings.quality === "auto" && health <= -3))) {
+        state.playingFallback = fallback;
+        state.playbackUrl = D.normalizeStream(fallback.url);
+      }
+    }
     state.playbackStartedAt = Date.now();
     stallReloads = 0;
     rememberRecent(channel);
@@ -205,9 +281,19 @@
     video.controls = isMobileLayout();
     backdrop.style.display = "none";
     video.classList.add("visible");
+    playbackSwitching = true;
+    suppressArchiveSaveUntil = Date.now() + 1000;
     video.pause();
     video.src = state.playbackUrl;
     video.load();
+    playbackSwitching = false;
+    if (keepArchive && state.archiveResumeAt > 0) {
+      video.addEventListener("loadedmetadata", function restoreArchivePosition() {
+        video.removeEventListener("loadedmetadata", restoreArchivePosition);
+        if (Number.isFinite(video.duration)) video.currentTime = Math.min(state.archiveResumeAt, Math.max(0, video.duration - 2));
+        state.archiveResumeAt = 0;
+      });
+    }
     var promise = video.play();
     playbackBlocked = false;
     if (promise && promise.catch) promise.catch(function () { playbackBlocked = true; showToast("Нажмите OK для воспроизведения"); });
@@ -215,19 +301,22 @@
     render();
   }
 
-  function playArchive(program) {
+  function playArchive(program, resumeAt) {
     if (!program || program.start > Date.now()) return;
+    saveArchiveProgress();
     var url = D.archiveUrl(state.channel, program);
     if (!url) { showToast("Для этой передачи архив недоступен"); return; }
     state.archiveProgram = program;
     state.isArchive = true;
     state.playbackUrl = url;
+    state.archiveResumeAt = Math.max(0, Number(resumeAt) || 0);
     state.panel = "hidden";
     state.overlay = "controls";
     playChannel(state.channel, true);
   }
 
   function goLive() {
+    saveArchiveProgress();
     state.archiveProgram = null; state.isArchive = false; state.overlay = "";
     playChannel(state.channel, false);
   }
@@ -268,9 +357,14 @@
     var recentHtml = recents.length ? recents.map(function (channel, index) {
       return '<button class="recent-card focusable" data-action="recent" data-index="' + index + '" data-focus="recent-' + index + '">' + logoHtml(channel, "") + '<span>' + esc(channel.name) + '</span></button>';
     }).join("") : '<div class="empty-recent">Недавние каналы появятся после первого просмотра</div>';
+    var archives = continueArchives(4);
+    var archiveHtml = archives.map(function (entry, index) {
+      return '<button class="continue-card focusable" data-action="continue-archive" data-index="' + index + '" data-focus="continue-' + index + '"><div class="continue-logo">' + (entry.channelLogo ? '<img src="' + esc(entry.channelLogo) + '" alt="">' : '<span>TV</span>') + '</div><div class="continue-copy"><small>' + esc(entry.channelName) + '</small><strong>' + esc(entry.title) + '</strong><div class="continue-time">' + formatDuration(entry.position) + ' из ' + formatDuration(entry.duration) + '</div><div class="continue-progress"><i style="width:' + entry.progress + '%"></i></div></div><b>▶</b></button>';
+    }).join("");
+    var archiveSection = archives.length ? '<h2 class="section-title continue-title">Продолжить архив</h2><div class="continue-row">' + archiveHtml + '</div>' : '';
     var playlistSwitch = store.playlists.length > 1 ? '<div class="playlist-switcher">' + store.playlists.map(function (item, index) { return '<button class="playlist-chip focusable ' + (index === store.activePlaylist ? 'active' : '') + '" data-action="select-playlist" data-index="' + index + '" data-focus="playlist-' + index + '">' + esc(item.name || ('Плейлист ' + (index + 1))) + '</button>'; }).join('') + '</div>' : '';
     app.innerHTML = '<section class="screen">' + topbar("home") + '<div class="home-content">' +
-      '<h2 class="section-title">Смотреть</h2><div class="hero-row">' + hero + media + '</div>' + playlistSwitch + '<h2 class="section-title">Недавние</h2><div class="recent-row">' + recentHtml + '</div>' +
+      '<h2 class="section-title">Смотреть</h2><div class="hero-row">' + hero + media + '</div>' + playlistSwitch + archiveSection + '<h2 class="section-title">Недавние</h2><div class="recent-row">' + recentHtml + '</div>' +
       (state.error ? '<div class="panel-placeholder">' + esc(state.error) + '</div>' : '') + '</div></section>';
   }
 
@@ -282,6 +376,8 @@
     else if (state.overlay === "info") html += renderInfo(false);
     else if (state.overlay === "controls") html += renderInfo(true);
     else if (state.overlay === "audio") html += renderAudio();
+    else if (state.overlay === "zapper") html += renderZapper();
+    else if (state.overlay === "stream-error") html += renderStreamError();
     html += '</section>';
     app.innerHTML = html;
   }
@@ -317,7 +413,7 @@
     var selected = list[state.channelIndex] || state.channel;
     var guide = selected ? (state.programs[selected.epgId] || []) : [];
     if (guide.length && state.guideIndex >= guide.length) state.guideIndex = guide.length - 1;
-    var guideWindow = mobile ? { start: 0, items: guide } : windowSlice(guide, state.guideIndex, 10);
+    var guideWindow = mobile ? { start: 0, items: guide.slice(0, Math.max(state.mobileGuideLimit, state.guideIndex + 1)) } : windowSlice(guide, state.guideIndex, 10);
     var guideHtml = guide.length ? guideWindow.items.map(function (program, offset) {
       var index = guideWindow.start + offset;
       var current = program.start <= Date.now() && program.end > Date.now();
@@ -327,7 +423,7 @@
     return '<div class="browser-shell"><aside class="categories"><div class="side-clock">' + clockLabel() + '</div><div class="side-date">' + esc(dateLabel()) + '</div>' +
       '<button class="search-entry focusable" data-action="search" data-focus="search-open">⌕  Поиск</button><div class="category-list">' + catHtml + '</div></aside>' +
       '<section class="channel-pane"><div class="pane-handle"></div><div class="' + (isGrid ? "channel-grid" : "channel-list") + '">' + (channelHtml || '<div class="panel-placeholder">В этой категории пока нет каналов</div>') + '</div>' + (mobile && channelWindow.items.length < list.length ? '<button class="mobile-more mobile-only" data-action="mobile-more-channels">Показать ещё каналы</button>' : '') + '</section>' +
-      '<section class="guide-pane"><div class="guide-header"><h2>' + esc(selected ? selected.name : "Программа") + '</h2><span class="archive-badge">' + (selected && selected.catchupDays ? "• " + selected.catchupDays + "д. архив" : "без архива") + '</span></div><div class="guide-list">' + guideHtml + '</div></section></div>';
+      '<section class="guide-pane"><div class="guide-header"><h2>' + esc(selected ? selected.name : "Программа") + '</h2><span class="archive-badge">' + (selected && selected.catchupDays ? "• " + selected.catchupDays + "д. архив" : "без архива") + '</span></div><div class="guide-list">' + guideHtml + '</div>' + (mobile && guideWindow.items.length < guide.length ? '<button class="mobile-more mobile-only" data-action="mobile-more-programs">Показать ещё передачи</button>' : '') + '</section></div>';
   }
 
   function renderInfo(controls) {
@@ -378,6 +474,69 @@
     return '<div class="bottom-sheet audio-sheet"><h1 style="margin:0 0 20px;font-size:27px">Аудиодорожка</h1><div class="audio-list">' + audioTracks().map(function (track) {
       return '<button class="control-button focusable ' + (track.enabled ? "live" : "") + '" data-action="audio" data-index="' + track.index + '" data-focus="audio-' + track.index + '">' + esc(track.label) + '</button>';
     }).join("") + '</div></div>';
+  }
+
+  function zapperList() {
+    var list = filteredChannels();
+    var currentIndex = list.findIndex(function (item) { return state.channel && item.id === state.channel.id; });
+    if (currentIndex < 0 && state.channel) {
+      list = state.channels.filter(function (item) { return item.group === state.channel.group; });
+      currentIndex = list.findIndex(function (item) { return item.id === state.channel.id; });
+    }
+    return { items: list, index: Math.max(0, currentIndex) };
+  }
+
+  function renderZapper() {
+    var source = zapperList();
+    if (!source.items.length) return "";
+    function at(offset) { return source.items[(source.index + offset + source.items.length) % source.items.length]; }
+    var rows = [{ channel: at(-1), role: "previous", arrow: "↑" }, { channel: at(0), role: "current", arrow: "" }, { channel: at(1), role: "next", arrow: "↓" }];
+    hydrateVisiblePrograms(rows.map(function (row) { return row.channel; }));
+    return '<div class="zapper"><div class="zapper-hint">↑ / ↓ переключить · OK закрыть</div>' + rows.map(function (row) {
+      var current = currentFor(row.channel);
+      return '<div class="zapper-card ' + row.role + '"><span class="zapper-arrow">' + row.arrow + '</span>' + logoHtml(row.channel, "zapper-logo") + '<div><small>' + (row.role === "current" ? "Сейчас" : row.role === "previous" ? "Предыдущий канал" : "Следующий канал") + '</small><strong>' + esc(row.channel.name) + '</strong><p>' + esc(current ? current.title : "Программа загружается…") + '</p></div></div>';
+    }).join("") + '</div>';
+  }
+
+  function scheduleZapperHide() {
+    clearTimeout(zapperTimer);
+    zapperToken += 1;
+    var token = zapperToken;
+    zapperTimer = setTimeout(function () {
+      if (token === zapperToken && state.screen === "viewer" && state.overlay === "zapper") { state.overlay = ""; render(); }
+    }, 4800);
+  }
+
+  function cancelZapperHide() {
+    zapperToken += 1;
+    clearTimeout(zapperTimer);
+  }
+
+  function showZapper() {
+    state.overlay = "zapper";
+    state.focusId = "";
+    render();
+    scheduleZapperHide();
+  }
+
+  function playAdjacentChannel(offset) {
+    var source = zapperList();
+    if (!source.items.length) return;
+    var index = (source.index + offset + source.items.length) % source.items.length;
+    var channel = source.items[index];
+    state.selectedGroup = channel.group || "__all__";
+    state.categoryIndex = Math.max(0, categories().findIndex(function (item) { return item.id === state.selectedGroup; }));
+    var list = filteredChannels();
+    state.channelIndex = Math.max(0, list.findIndex(function (item) { return item.id === channel.id; }));
+    state.guideIndex = 0;
+    state.mobileGuideLimit = 36;
+    state.overlay = "zapper";
+    playChannel(channel, false);
+    scheduleZapperHide();
+  }
+
+  function renderStreamError() {
+    return '<div class="stream-error-sheet"><div class="stream-error-icon">!</div><h2>Канал временно недоступен</h2><p>Мы уже переподключились и проверили запасное качество.</p><div class="controls-row"><button class="control-button focusable" data-action="retry-stream" data-focus="stream-retry">Повторить</button><button class="control-button focusable" data-action="diagnose-stream" data-focus="stream-diagnostics">Диагностика</button><button class="control-button live focusable" data-action="close-overlay" data-focus="stream-close">Закрыть</button></div></div>';
   }
 
   var keyboardChars = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя".split("");
@@ -511,6 +670,7 @@
     else if (name === "settings") { closePlayback(); state.screen = "settings"; render(); }
     else if (name === "open-tv") openTelevision(null, true);
     else if (name === "recent") openTelevision(recentChannels(5)[+target.getAttribute("data-index")], false);
+    else if (name === "continue-archive") resumeArchive(continueArchives(4)[+target.getAttribute("data-index")]);
     else if (name === "open-media") openMedia();
     else if (name === "add-playlist") openPlaylistDialog(true);
     else if (name === "edit-playlist") openPlaylistDialog(false);
@@ -526,12 +686,12 @@
     else if (name === "mobile-category") {
       state.categoryIndex = +target.getAttribute("data-index");
       var mobileCat = categories()[state.categoryIndex];
-      if (mobileCat) { state.selectedGroup = mobileCat.id; state.channelIndex = 0; state.guideIndex = 0; state.mobileChannelLimit = 40; state.panel = "channels"; render(); }
+      if (mobileCat) { state.selectedGroup = mobileCat.id; state.channelIndex = 0; state.guideIndex = 0; state.mobileChannelLimit = 32; state.mobileGuideLimit = 36; state.panel = "channels"; render(); }
     }
     else if (name === "mobile-channel") {
       state.channelIndex = +target.getAttribute("data-index");
       var mobileChannel = filteredChannels()[state.channelIndex];
-      if (mobileChannel) { state.panel = "channels"; playChannel(mobileChannel, false); }
+      if (mobileChannel) { state.panel = "channels"; state.mobileGuideLimit = 36; playChannel(mobileChannel, false); }
     }
     else if (name === "mobile-program") {
       state.guideIndex = +target.getAttribute("data-index");
@@ -540,9 +700,24 @@
       if (mobileProgram && mobileProgram.start <= Date.now()) { if (mobileProgram.end <= Date.now()) playArchive(mobileProgram); else goLive(); }
     }
     else if (name === "mobile-more-channels") { state.mobileChannelLimit += 40; render(); }
+    else if (name === "mobile-more-programs") { state.mobileGuideLimit += 36; render(); }
     else if (name === "show-controls") { state.overlay = "controls"; state.focusId = "control-play"; render(); }
     else if (name === "show-audio") { state.overlay = "audio"; state.focusId = "audio-0"; render(); }
-    else if (name === "close-overlay") { state.overlay = ""; render(); }
+    else if (name === "close-overlay") { cancelZapperHide(); state.overlay = ""; render(); }
+    else if (name === "retry-stream") {
+      state.overlay = "";
+      state.playingFallback = null;
+      stallReloads = 0;
+      reloadPlayback("Пробую подключиться ещё раз…");
+      render();
+    }
+    else if (name === "diagnose-stream") {
+      closePlayback();
+      state.screen = "settings";
+      state.focusId = "diagnostics";
+      render();
+      runDiagnostics();
+    }
     else if (name === "close-media-search") { state.media.search = false; render(); }
     else if (name === "from-start") { var current = state.channel && D.currentProgram(state.programs[state.channel.epgId] || []); if (current) playArchive(current); }
     else if (name === "live") goLive();
@@ -695,7 +870,14 @@
   }
 
   function closePlayback() {
+    saveArchiveProgress();
+    clearTimeout(waitingTimer);
+    clearTimeout(healthyPlaybackTimer);
+    cancelZapperHide();
+    playbackSwitching = true;
+    suppressArchiveSaveUntil = Date.now() + 1000;
     video.pause(); video.removeAttribute("src"); video.load(); video.classList.remove("visible"); backdrop.style.display = "block";
+    playbackSwitching = false;
     state.panel = "hidden"; state.overlay = ""; releaseWakeLock();
   }
 
@@ -722,7 +904,10 @@
     setTimeout(function () {
       var target = state.focusId ? document.querySelector('[data-focus="' + state.focusId + '"]') : null;
       if (!target) target = document.querySelector(".focusable");
-      if (target && target.focus) target.focus();
+      if (target && target.focus) {
+        target.focus();
+        if (target.scrollIntoView) target.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
     }, 0);
   }
 
@@ -745,6 +930,16 @@
   }
 
   function viewerArrow(direction) {
+    if (state.overlay === "zapper") {
+      if (direction === "up") playAdjacentChannel(-1);
+      else if (direction === "down") playAdjacentChannel(1);
+      else {
+        cancelZapperHide();
+        state.overlay = "";
+        render();
+      }
+      return;
+    }
     if (state.overlay === "info" && direction === "down") {
       state.overlay = "";
       state.focusId = "";
@@ -754,6 +949,7 @@
     if (state.overlay) { spatialMove(direction); return; }
     if (state.panel === "hidden") {
       if (direction === "right") { state.panel = "channels"; state.focusId = "channel-" + state.channelIndex; render(); }
+      else if (direction === "left") showZapper();
       else if (direction === "up") { state.overlay = "info"; state.focusId = "info-start"; render(); }
       else if (direction === "down") { state.overlay = "audio"; state.focusId = "audio-0"; render(); }
       return;
@@ -790,6 +986,12 @@
       var startPromise = video.play();
       if (startPromise && startPromise.catch) startPromise.catch(function () { playbackBlocked = true; });
     }
+    if (state.overlay === "zapper") {
+      cancelZapperHide();
+      state.overlay = "";
+      render();
+      return;
+    }
     if (state.overlay) {
       var active = document.activeElement; if (active && active.click) active.click(); return;
     }
@@ -812,7 +1014,7 @@
     if (state.dialog) { clearSourcePair(); state.dialog = null; render(); return; }
     if (state.screen === "viewer") {
       if (state.overlay === "search" && state.searchQuery) { state.searchQuery = state.searchQuery.slice(0, -1); render(); return; }
-      if (state.overlay) { state.overlay = ""; render(); return; }
+      if (state.overlay) { cancelZapperHide(); state.overlay = ""; render(); return; }
       if (state.panel !== "hidden") { state.panel = "hidden"; render(); return; }
       closePlayback(); state.screen = "home"; render(); return;
     }
@@ -865,36 +1067,96 @@
     enterDownAt = 0; enterLongHandled = false;
   });
 
+  function healthKey(channel) { return channel && channel.url ? channel.url : ""; }
+
+  function recordStreamFailure(channel) {
+    var key = healthKey(channel);
+    if (!key) return;
+    store.channelHealth[key] = Math.max(-5, Number(store.channelHealth[key] || 0) - 1);
+    persist();
+  }
+
+  function recordStreamSuccess(channel) {
+    var key = healthKey(channel);
+    if (!key) return;
+    store.channelHealth[key] = Math.min(5, Number(store.channelHealth[key] || 0) + 1);
+    persist();
+  }
+
+  function showStreamError() {
+    state.overlay = "stream-error";
+    state.focusId = "stream-retry";
+    render();
+  }
+
+  function switchToFallback(reason) {
+    if (state.isArchive || store.settings.quality === "hd" || state.playingFallback) return false;
+    var fallback = D.qualityFallback(state.channel, state.channels);
+    if (!fallback) return false;
+    state.playingFallback = fallback;
+    state.playbackUrl = D.normalizeStream(fallback.url);
+    stallReloads = 0;
+    video.src = state.playbackUrl;
+    video.load();
+    var promise = video.play();
+    if (promise && promise.catch) promise.catch(function () {});
+    showToast(reason || "Включено более устойчивое качество");
+    return true;
+  }
+
   function reloadPlayback(reason) {
-    if (!state.playbackUrl || stallReloads >= 2) return;
+    if (!state.playbackUrl) return;
+    if (stallReloads >= 2) {
+      recordStreamFailure(state.channel);
+      if (!switchToFallback("Поток нестабилен — включено обычное качество")) showStreamError();
+      return;
+    }
     stallReloads += 1;
     var time = state.isArchive ? video.currentTime : 0;
     video.src = state.playbackUrl; video.load();
-    video.addEventListener("loadedmetadata", function restore() { video.removeEventListener("loadedmetadata", restore); if (time) video.currentTime = time; video.play(); });
+    video.addEventListener("loadedmetadata", function restore() {
+      video.removeEventListener("loadedmetadata", restore);
+      if (time) video.currentTime = Math.min(time, Math.max(0, video.duration - 2));
+      var promise = video.play();
+      if (promise && promise.catch) promise.catch(function () {});
+    });
     showToast(reason || "Восстанавливаю поток…");
   }
 
   function handleLongBuffering() {
     clearTimeout(waitingTimer);
     waitingTimer = setTimeout(function () {
-      if (store.settings.quality === "auto" && !state.isArchive) {
-        var fallback = D.qualityFallback(state.channel, state.channels);
-        if (fallback) {
-          state.playbackUrl = D.normalizeStream(fallback.url); video.src = state.playbackUrl; video.load(); video.play();
-          showToast("Слабое соединение — включено обычное качество"); return;
-        }
-      }
+      recordStreamFailure(state.channel);
+      if (stallReloads >= 1 && switchToFallback("Слабое соединение — включено обычное качество")) return;
       reloadPlayback("Поток завис — переподключаюсь…");
     }, store.settings.buffer === "stable" ? 18000 : store.settings.buffer === "fast" ? 8000 : 12000);
   }
 
   video.addEventListener("waiting", handleLongBuffering);
   video.addEventListener("stalled", handleLongBuffering);
-  video.addEventListener("playing", function () { clearTimeout(waitingTimer); stallReloads = 0; lastProgress = { time: video.currentTime, at: Date.now() }; });
-  video.addEventListener("error", function () { reloadPlayback("Ошибка потока — пробую ещё раз…"); });
+  video.addEventListener("playing", function () {
+    clearTimeout(waitingTimer);
+    clearTimeout(healthyPlaybackTimer);
+    lastProgress = { time: video.currentTime, at: Date.now() };
+    healthyPlaybackTimer = setTimeout(function () {
+      if (!state.playingFallback) recordStreamSuccess(state.channel);
+      stallReloads = 0;
+    }, 10000);
+  });
+  video.addEventListener("error", function () {
+    clearTimeout(healthyPlaybackTimer);
+    recordStreamFailure(state.channel);
+    reloadPlayback("Ошибка потока — пробую ещё раз…");
+  });
   video.addEventListener("timeupdate", function () {
     if (Math.abs(video.currentTime - lastProgress.time) > .5) lastProgress = { time: video.currentTime, at: Date.now() };
+    if (state.isArchive && Date.now() - archiveSaveTimer > 12000) {
+      archiveSaveTimer = Date.now();
+      saveArchiveProgress();
+    }
   });
+  video.addEventListener("pause", saveArchiveProgress);
+  video.addEventListener("ended", saveArchiveProgress);
   setInterval(function () {
     if (state.screen === "viewer" && !playbackBlocked && !video.paused && Date.now() - lastProgress.at > 25000) reloadPlayback("Поток остановился — восстанавливаю…");
     if (state.screen === "viewer") {
@@ -903,6 +1165,7 @@
     }
   }, 30000);
   document.addEventListener("visibilitychange", function () { if (!document.hidden && state.screen === "viewer") requestWakeLock(); });
+  window.addEventListener("beforeunload", saveArchiveProgress);
 
   function scaleStage() {
     var stage = document.getElementById("stage");
@@ -928,7 +1191,7 @@
   else openPlaylistDialog(true, true);
   if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
     window.addEventListener("load", function () {
-      navigator.serviceWorker.register("sw.js?v=4").catch(function () {});
+      navigator.serviceWorker.register("sw.js?v=6").catch(function () {});
     });
   }
   setTimeout(function () { document.getElementById("splash").classList.add("hidden"); }, 1500);

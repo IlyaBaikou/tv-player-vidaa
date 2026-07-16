@@ -15,6 +15,7 @@
   function loadStore() {
     var defaults = {
       playlists: [], favorites: [], recent: [], activePlaylist: 0,
+      archiveHistory: [], channelHealth: {},
       settings: { view: "list", scale: "fit", quality: "auto", buffer: "balanced" }
     };
     try {
@@ -85,8 +86,34 @@
     });
   }
 
-  function loadPlaylist(url) {
-    return fetchText(url, { cache: "no-store" }).then(parseM3u);
+  function playlistCacheKey(url) { return "tv-player-playlist-cache-v1-" + hash(String(url || "")); }
+
+  function readPlaylistCache(url) {
+    try {
+      var cached = JSON.parse(localStorage.getItem(playlistCacheKey(url)) || "null");
+      if (cached && cached.data && Array.isArray(cached.data.channels)) return cached;
+    } catch (error) { /* ignore corrupted or unavailable cache */ }
+    return null;
+  }
+
+  function writePlaylistCache(url, data) {
+    try { localStorage.setItem(playlistCacheKey(url), JSON.stringify({ savedAt: Date.now(), data: data })); }
+    catch (error) { /* quota or privacy mode */ }
+  }
+
+  function fetchPlaylist(url) {
+    return fetchText(url, { cache: "no-store" }).then(parseM3u).then(function (data) {
+      writePlaylistCache(url, data);
+      return data;
+    });
+  }
+
+  function loadPlaylist(url, force) {
+    var cached = !force && readPlaylistCache(url);
+    if (!cached) return fetchPlaylist(url);
+    // Показываем сохранённый список сразу, а свежую копию готовим для следующего запуска.
+    setTimeout(function () { fetchPlaylist(url).catch(function () {}); }, 0);
+    return Promise.resolve(cached.data);
   }
 
   function parseXmlDate(value) {
