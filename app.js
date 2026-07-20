@@ -12,7 +12,7 @@
   var state = {
     screen: "home", loading: false, error: "", playlist: null, channels: [], groups: [],
     channel: null, selectedGroup: "__all__", categoryIndex: 2, channelIndex: 0,
-    guideIndex: 0, panel: "hidden", overlay: "", programs: {}, currentByChannel: {},
+    guideIndex: 0, panel: "hidden", overlay: "", programs: {}, programStatus: {}, currentByChannel: {},
     searchQuery: "", searchKeyIndex: 0, media: { stack: [], folder: null, index: 0, loading: false, error: "", search: false, searchQuery: "" },
     diagnostics: [], diagnosticConclusion: "Нажмите «Проверить соединение»",
     archiveProgram: null, isArchive: false, playbackUrl: "", playbackStartedAt: 0,
@@ -38,6 +38,7 @@
   var zapperTimer = 0;
   var zapperToken = 0;
   var healthyPlaybackTimer = 0;
+  var programRequests = {};
   var sourcePairBase = String(config.pairingBaseUrl || "").replace(/\/$/, "");
   var sportsApiBase = String(config.sportsApiUrl || "").replace(/\/$/, "");
 
@@ -150,9 +151,14 @@
   }
 
   function loadPrograms(channel, quiet) {
-    if (!channel || !channel.epgId || state.programs[channel.epgId]) return Promise.resolve(state.programs[channel && channel.epgId] || []);
-    return D.loadPrograms(config.epgBaseUrl || "epg", channel.epgId).then(function (programs) {
+    if (!channel || !channel.epgId) return Promise.resolve([]);
+    var epgId = channel.epgId;
+    if (Object.prototype.hasOwnProperty.call(state.programs, epgId)) return Promise.resolve(state.programs[epgId]);
+    if (programRequests[epgId]) return programRequests[epgId];
+    state.programStatus[epgId] = "loading";
+    programRequests[epgId] = D.loadPrograms(config.epgBaseUrl || "epg", epgId).then(function (programs) {
       state.programs[channel.epgId] = programs;
+      state.programStatus[epgId] = "loaded";
       state.currentByChannel[channel.epgId] = D.currentProgram(programs);
       if (!quiet) {
         var currentIndex = programs.findIndex(function (program) { return program.start <= Date.now() && program.end > Date.now(); });
@@ -161,9 +167,22 @@
       scheduleRender();
       return programs;
     }).catch(function (error) {
+      state.programStatus[epgId] = "error";
       if (!quiet) { state.error = error.message; scheduleRender(); }
       return [];
+    }).then(function (programs) {
+      delete programRequests[epgId];
+      return programs;
     });
+    return programRequests[epgId];
+  }
+
+  function programLabel(channel, current) {
+    if (current) return current.title;
+    var status = channel && channel.epgId ? state.programStatus[channel.epgId] : "loaded";
+    if (status === "error") return "Не удалось загрузить программу";
+    if (status === "loaded") return "Нет актуальной программы";
+    return "Программа загружается…";
   }
 
   function hydrateVisiblePrograms(channels) {
@@ -364,6 +383,14 @@
     render();
   }
 
+  function openChannelPlayer(channel) {
+    if (!channel) return;
+    state.panel = "hidden";
+    state.overlay = "";
+    state.focusId = "";
+    playChannel(channel, false);
+  }
+
   function playArchive(program, resumeAt) {
     if (!program || program.start > Date.now()) return;
     saveArchiveProgress();
@@ -506,7 +533,7 @@
   function renderViewer() {
     var html = '<section class="viewer-screen">';
     if (state.panel !== "hidden") html += '<div class="viewer-gradient"></div>' + renderBrowser();
-    else html += '<button class="mobile-player-tap mobile-only" data-action="show-controls" aria-label="Управление">•••</button>';
+    else html += '<button class="mobile-channel-menu mobile-only" data-action="show-channel-menu" aria-label="Каналы">☰ <span>Каналы</span></button><button class="mobile-player-tap mobile-only" data-action="show-controls" aria-label="Управление">•••</button>';
     if (state.overlay === "search") html += renderSearch();
     else if (state.overlay === "info") html += renderInfo(false);
     else if (state.overlay === "controls") html += renderInfo(true);
@@ -541,7 +568,7 @@
       var favorite = store.favorites.indexOf(channel.url) >= 0;
       return '<button class="channel-card focusable ' + (state.channel && channel.id === state.channel.id ? "active" : "") + '" data-action="mobile-channel" data-index="' + index + '" data-focus="channel-' + index + '">' +
         logoHtml(channel, "channel-logo") + '<div class="channel-copy"><div class="channel-name">' + esc(channel.name) + '</div>' +
-        '<div class="channel-program">' + esc(current ? current.title : "Программа загружается…") + '</div>' +
+        '<div class="channel-program">' + esc(programLabel(channel, current)) + '</div>' +
         (current ? '<div class="mini-progress"><b style="width:' + progressFor(current) + '%"></b></div>' : '') + '</div>' +
         (favorite ? '<div class="favorite-star">★</div>' : '') + '</button>';
     }).join("");
@@ -554,7 +581,7 @@
       var current = program.start <= Date.now() && program.end > Date.now();
       var future = program.start > Date.now();
       return '<button class="program-card focusable ' + (current ? "current " : "") + (future ? "future" : "") + '" data-action="mobile-program" data-index="' + index + '" data-focus="program-' + index + '"><span class="program-time">' + D.formatTime(program.start) + '</span><span class="program-title">' + esc(program.title) + '</span><span class="program-status">' + (current ? "live" : future ? "будет позже" : "▶ архив") + '</span></button>';
-    }).join("") : '<div class="panel-placeholder">' + (state.error ? esc(state.error) : "Программа передач загружается…") + '</div>';
+    }).join("") : '<div class="panel-placeholder">' + (selected && state.programStatus[selected.epgId] === "error" ? "Не удалось загрузить программу передач" : selected && state.programStatus[selected.epgId] === "loaded" ? "Для этого канала нет актуальной программы" : "Программа передач загружается…") + '</div>';
     return '<div class="browser-shell"><aside class="categories"><div class="side-clock">' + clockLabel() + '</div><div class="side-date">' + esc(dateLabel()) + '</div>' +
       '<button class="search-entry focusable" data-action="search" data-focus="search-open">⌕  Поиск</button><div class="category-list">' + catHtml + '</div></aside>' +
       '<section class="channel-pane"><div class="pane-handle"></div><div class="' + (isGrid ? "channel-grid" : "channel-list") + '">' + (channelHtml || '<div class="panel-placeholder">В этой категории пока нет каналов</div>') + '</div>' + (mobile && channelWindow.items.length < list.length ? '<button class="mobile-more mobile-only" data-action="mobile-more-channels">Показать ещё каналы</button>' : '') + '</section>' +
@@ -629,7 +656,7 @@
     hydrateVisiblePrograms(rows.map(function (row) { return row.channel; }));
     return '<div class="zapper"><div class="zapper-hint">↑ / ↓ переключить · OK закрыть</div>' + rows.map(function (row) {
       var current = currentFor(row.channel);
-      return '<div class="zapper-card ' + row.role + '"><span class="zapper-arrow">' + row.arrow + '</span>' + logoHtml(row.channel, "zapper-logo") + '<div><small>' + (row.role === "current" ? "Сейчас" : row.role === "previous" ? "Предыдущий канал" : "Следующий канал") + '</small><strong>' + esc(row.channel.name) + '</strong><p>' + esc(current ? current.title : "Программа загружается…") + '</p></div></div>';
+      return '<div class="zapper-card ' + row.role + '"><span class="zapper-arrow">' + row.arrow + '</span>' + logoHtml(row.channel, "zapper-logo") + '<div><small>' + (row.role === "current" ? "Сейчас" : row.role === "previous" ? "Предыдущий канал" : "Следующий канал") + '</small><strong>' + esc(row.channel.name) + '</strong><p>' + esc(programLabel(row.channel, current)) + '</p></div></div>';
     }).join("") + '</div>';
   }
 
@@ -829,7 +856,7 @@
     else if (name === "key") { state.searchQuery += target.getAttribute("data-char") || ""; render(); }
     else if (name === "space") { state.searchQuery += " "; render(); }
     else if (name === "backspace") { state.searchQuery = state.searchQuery.slice(0, -1); render(); }
-    else if (name === "search-result") { var result = searchResults()[+target.getAttribute("data-index")]; state.overlay = ""; playChannel(result, false); }
+    else if (name === "search-result") { var result = searchResults()[+target.getAttribute("data-index")]; openChannelPlayer(result); }
     else if (name === "mobile-category") {
       state.categoryIndex = +target.getAttribute("data-index");
       var mobileCat = categories()[state.categoryIndex];
@@ -838,7 +865,7 @@
     else if (name === "mobile-channel") {
       state.channelIndex = +target.getAttribute("data-index");
       var mobileChannel = filteredChannels()[state.channelIndex];
-      if (mobileChannel) { state.panel = "channels"; state.mobileGuideLimit = 36; playChannel(mobileChannel, false); }
+      if (mobileChannel) { state.mobileGuideLimit = 36; openChannelPlayer(mobileChannel); }
     }
     else if (name === "mobile-program") {
       state.guideIndex = +target.getAttribute("data-index");
@@ -848,6 +875,7 @@
     }
     else if (name === "mobile-more-channels") { state.mobileChannelLimit += 40; render(); }
     else if (name === "mobile-more-programs") { state.mobileGuideLimit += 36; render(); }
+    else if (name === "show-channel-menu") { state.panel = "channels"; state.overlay = ""; state.focusId = "channel-" + state.channelIndex; render(); }
     else if (name === "show-controls") { state.overlay = "controls"; state.focusId = "control-play"; render(); }
     else if (name === "show-audio") { state.overlay = "audio"; state.focusId = "audio-0"; render(); }
     else if (name === "close-overlay") { cancelZapperHide(); state.overlay = ""; render(); }
@@ -1155,7 +1183,7 @@
       state.selectedGroup = cat.id; state.channelIndex = 0; state.panel = "channels"; state.focusId = "channel-0"; render(); return;
     }
     if (state.panel === "channels") {
-      var channel = filteredChannels()[state.channelIndex]; if (channel) playChannel(channel, false); return;
+      var channel = filteredChannels()[state.channelIndex]; if (channel) openChannelPlayer(channel); return;
     }
     if (state.panel === "guide") {
       var programs = state.channel ? state.programs[state.channel.epgId] || [] : [];
@@ -1345,7 +1373,7 @@
   else openPlaylistDialog(true, true);
   if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
     window.addEventListener("load", function () {
-      navigator.serviceWorker.register("sw.js?v=8").catch(function () {});
+      navigator.serviceWorker.register("sw.js?v=10").catch(function () {});
     });
   }
   setTimeout(function () { document.getElementById("splash").classList.add("hidden"); }, 1500);

@@ -1,13 +1,13 @@
 /* TV Player VIDAA — offline shell cache. Remote config and streams are never cached. */
-var CACHE = "tv-player-vidaa-shell-v8";
+var CACHE = "tv-player-vidaa-shell-v10";
 var SHELL = [
   "./",
   "index.html",
-  "styles.css?v=10",
-  "config.js?v=10",
-  "data.js?v=10",
-  "sports.js?v=10",
-  "app.js?v=10",
+  "styles.css?v=12",
+  "config.js?v=12",
+  "data.js?v=12",
+  "sports.js?v=12",
+  "app.js?v=12",
   "manifest.json",
   "assets/rubik.ttf",
   "assets/icon.svg",
@@ -56,13 +56,16 @@ self.addEventListener("fetch", function (event) {
     return;
   }
 
-  event.respondWith(caches.match(request).then(function (cached) {
-    return cached || fetch(request).then(function (response) {
-      if (response.ok) {
-        var copy = response.clone();
-        caches.open(CACHE).then(function (cache) { cache.put(request, copy); });
-      }
-      return response;
+  event.respondWith(fetch(request).then(function (response) {
+    if (response.ok) {
+      var copy = response.clone();
+      caches.open(CACHE).then(function (cache) { cache.put(request, copy); });
+    }
+    return response;
+  }).catch(function () {
+    return caches.match(request).then(function (cached) {
+      if (cached) return cached;
+      return caches.match("index.html");
     });
   }));
 });
